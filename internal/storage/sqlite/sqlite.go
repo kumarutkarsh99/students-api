@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/kumarutkarsh99/students-api/internal/config"
+	"github.com/kumarutkarsh99/students-api/internal/storage"
 	"github.com/kumarutkarsh99/students-api/internal/types"
 	_ "modernc.org/sqlite"
 )
@@ -99,4 +100,37 @@ func (s *Sqlite) GetStudents() ([]types.Student, error) {
 		return nil, err
 	}
 	return students, nil
+}
+
+func (s *Sqlite) DeleteStudentById(id int64) error {
+	res, err := s.Db.Exec("DELETE FROM students WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete student with id %d: %w", id, err)
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check rows affected when deleting student with id %d: %w", id, err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("%w: id %d", storage.ErrStudentNotFound, id)
+	}
+
+	return nil
+}
+
+func (s *Sqlite) UpdateStudentById(id int64, name string, email string, age int) error {
+	stmt, err := s.Db.Exec("UPDATE students SET name = ?, email = ?, age = ? WHERE id = ?", name, email, age, id)
+	if err != nil {
+		return fmt.Errorf("update student with id %d: %w", id, err)
+	}
+
+	rowsAffected, err := stmt.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check rows affected when updating student with id %d: %w", id, err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("%w: id %d", storage.ErrStudentNotFound, id)
+	}
+	return nil
 }
