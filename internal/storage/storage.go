@@ -9,9 +9,9 @@ import (
 var ErrStudentNotFound = errors.New("student not found")
 
 type Storage interface {
-	CreateStudent(name string, email string, age int) (int64, error)
+	CreateStudent(name string, email string, age int) (types.Student, error)
 	GetStudentById(id int64) (types.Student, error)
 	GetStudents() ([]types.Student, error)
-	UpdateStudentById(id int64, name string, email string, age int) error
+	UpdateStudentById(id int64, name string, email string, age int) (types.Student, error)
 	DeleteStudentById(id int64) error
 }

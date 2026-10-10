@@ -2,48 +2,40 @@ package response
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/go-playground/validator/v10"
 )
 
-type Response struct {
-	Status string `json:"status"`
+type ErrorResponse struct {
 	Error  string `json:"error"`
 }
 
-const (
-	statusOk    = "OK"
-	statusError = "Error"
-)
-
-func WriteJson(w http.ResponseWriter, status int, data interface{}) error {
+func WriteJSON(w http.ResponseWriter, status int, data any) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	return json.NewEncoder(w).Encode(data)
 }
 
-func GeneralError(err error) Response {
-	return Response{
-		Status: statusError,
-		Error:  err.Error(),
-	}
+func WriteError(w http.ResponseWriter, status int, message string) error {
+	return WriteJSON(w, status, ErrorResponse{Error: message})
 }
 
-func ValidationError(errs validator.ValidationErrors) Response {
+func ValidationError(errs validator.ValidationErrors) ErrorResponse {
 	var errMsgs []string
 	for _, err := range errs {
+		field := strings.ToLower(err.Field())
 		switch err.ActualTag() {
 		case "required":
-			errMsgs = append(errMsgs, fmt.Sprintf("field %s is required field", err.Field()))
+			errMsgs = append(errMsgs, field+" is required")
+		case "gt":
+			errMsgs = append(errMsgs, field+" must be greater than zero")
+		case "email":
+			errMsgs = append(errMsgs, field+" must be a valid email address")
 		default:
-			errMsgs = append(errMsgs, fmt.Sprintf("field %s is invalid", err.Field()))
+			errMsgs = append(errMsgs, field+" is invalid")
 		}
 	}
-	return Response{
-		Status: statusError,
-		Error:  strings.Join(errMsgs, ", "),
-	}
+	return ErrorResponse{Error: strings.Join(errMsgs, ", ")}
 }

@@ -25,6 +25,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer func() {
+		if err := storage.Close(); err != nil {
+			slog.Error("failed to close storage", slog.String("error", err.Error()))
+		}
+	}()
 
 	slog.Info("storage initialised", slog.String("env", cfg.Env))
 
@@ -38,8 +43,12 @@ func main() {
 
 	//setup server
 	server := http.Server{
-		Addr:    cfg.Addr,
-		Handler: router,
+		Addr:              cfg.Addr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	slog.Info("server started", slog.String("address", cfg.Addr))
@@ -48,6 +57,7 @@ func main() {
 	serverErrors := make(chan error, 1)
 
 	signal.Notify(done, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(done)
 
 	go func() {
 		err := server.ListenAndServe()

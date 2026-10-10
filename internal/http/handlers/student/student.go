@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/kumarutkarsh99/students-api/internal/storage"
@@ -15,168 +16,178 @@ import (
 	"github.com/kumarutkarsh99/students-api/internal/utils/response"
 )
 
-type updateStudentRequest struct {
-	Name  string `json:"name" validate:"required"`
-	Age   int    `json:"age" validate:"gt=0"`
-	Email string `json:"email" validate:"required"`
-}
+const maxRequestBodyBytes = 1 << 20
 
-func New(storage storage.Storage) http.HandlerFunc {
+var validate = validator.New()
+
+func New(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var student types.Student
-		err := json.NewDecoder(r.Body).Decode(&student)
-		if errors.Is(err, io.EOF) {
-			response.WriteJson(w, http.StatusBadRequest, response.GeneralError(fmt.Errorf("empty body")))
+		var input types.StudentInput
+		if !decodeInput(w, r, &input) || !validateInput(w, input) {
 			return
 		}
 
-		if err != nil {
-			response.WriteJson(w, http.StatusBadRequest, response.GeneralError(err))
-			return
-		}
-
-		// request validation
-		if err := validator.New().Struct(student); err != nil {
-			validateErrs := err.(validator.ValidationErrors)
-			response.WriteJson(w, http.StatusBadRequest, response.ValidationError(validateErrs))
-			return
-		}
-
-		slog.Info("creating a student")
-
-		lastId, err := storage.CreateStudent(
-			student.Name,
-			student.Email,
-			student.Age,
-		)
-
+		student, err := store.CreateStudent(input.Name, input.Email, input.Age)
 		if err != nil {
 			slog.Error("failed to create student", slog.String("error", err.Error()))
-			response.WriteJson(w, http.StatusInternalServerError, err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
-		slog.Info("student created successfully", slog.String("studentId", fmt.Sprint(lastId)))
-		response.WriteJson(w, http.StatusCreated, map[string]int64{"id": lastId})
+		w.Header().Set("Location", fmt.Sprintf("/api/students/%d", student.ID))
+		writeJSON(w, http.StatusCreated, student)
 	}
 }
 
-func GetStudentById(storage storage.Storage) http.HandlerFunc {
+func GetStudentById(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		slog.Info("getting a student", slog.String("id", id))
-
-		intId, err := strconv.ParseInt(id, 10, 64)
-		if err != nil {
-			response.WriteJson(w, http.StatusBadRequest, response.GeneralError(err))
+		id, ok := studentID(w, r)
+		if !ok {
 			return
 		}
 
-		student, err := storage.GetStudentById(intId)
-		if err != nil {
-			slog.Error("error getting user", slog.String("id", id))
-			response.WriteJson(w, http.StatusInternalServerError, response.GeneralError(err))
-			return
-		}
-
-		response.WriteJson(w, http.StatusOK, student)
-	}
-}
-
-func GetList(storage storage.Storage) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		slog.Info("getting all students")
-		students, err := storage.GetStudents()
-		if err != nil {
-			response.WriteJson(w, http.StatusInternalServerError, err)
-		}
-		response.WriteJson(w, http.StatusOK, students)
-	}
-}
-
-func DeleteStudentById(store storage.Storage) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		slog.Info("deleting student", slog.String("id", id))
-
-		intId, err := strconv.ParseInt(id, 10, 64)
-		if err != nil {
-			response.WriteJson(w, http.StatusBadRequest, response.GeneralError(err))
-			return
-		}
-
-		if intId <= 0 {
-			response.WriteJson(w, http.StatusBadRequest, response.GeneralError(fmt.Errorf("student id must be a positive integer")))
-			return
-		}
-
-		err = store.DeleteStudentById(intId)
+		student, err := store.GetStudentById(id)
 		if err != nil {
 			if errors.Is(err, storage.ErrStudentNotFound) {
-				response.WriteJson(w, http.StatusNotFound, response.GeneralError(err))
+				writeError(w, http.StatusNotFound, err.Error())
 				return
 			}
-
-			slog.Error("failed to delete student", slog.String("id", id), slog.String("error", err.Error()))
-			response.WriteJson(w, http.StatusInternalServerError, response.GeneralError(err))
+			slog.Error("failed to get student", slog.Int64("id", id), slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
-		w.WriteHeader(http.StatusNoContent)
+		writeJSON(w, http.StatusOK, student)
+	}
+}
+
+func GetList(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		students, err := store.GetStudents()
+		if err != nil {
+			slog.Error("failed to list students", slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, students)
 	}
 }
 
 func UpdateStudentById(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		slog.Info("updating student", slog.String("id", id))
-
-		intId, err := strconv.ParseInt(id, 10, 64)
-		if err != nil {
-			response.WriteJson(w, http.StatusBadRequest, response.GeneralError(err))
+		id, ok := studentID(w, r)
+		if !ok {
 			return
 		}
 
-		if intId <= 0 {
-			response.WriteJson(w, http.StatusBadRequest, response.GeneralError(fmt.Errorf("student id must be a positive integer")))
+		var input types.StudentInput
+		if !decodeInput(w, r, &input) || !validateInput(w, input) {
 			return
 		}
 
-		var student updateStudentRequest
-		err = json.NewDecoder(r.Body).Decode(&student)
-		if errors.Is(err, io.EOF) {
-			response.WriteJson(w, http.StatusBadRequest, response.GeneralError(fmt.Errorf("empty body")))
-			return
-		}
-
-		if err != nil {
-			response.WriteJson(w, http.StatusBadRequest, response.GeneralError(err))
-			return
-		}
-
-		// request validation
-		if err := validator.New().Struct(student); err != nil {
-			validateErrs, ok := err.(validator.ValidationErrors)
-			if !ok {
-				response.WriteJson(w, http.StatusInternalServerError, response.GeneralError(err))
-				return
-			}
-			response.WriteJson(w, http.StatusBadRequest, response.ValidationError(validateErrs))
-			return
-		}
-
-		err = store.UpdateStudentById(intId, student.Name, student.Email, student.Age)
+		student, err := store.UpdateStudentById(id, input.Name, input.Email, input.Age)
 		if err != nil {
 			if errors.Is(err, storage.ErrStudentNotFound) {
-				response.WriteJson(w, http.StatusNotFound, response.GeneralError(err))
+				writeError(w, http.StatusNotFound, err.Error())
 				return
 			}
+			slog.Error("failed to update student", slog.Int64("id", id), slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
 
-			slog.Error("failed to update student", slog.String("id", id), slog.String("error", err.Error()))
-			response.WriteJson(w, http.StatusInternalServerError, response.GeneralError(err))
+		writeJSON(w, http.StatusOK, student)
+	}
+}
+
+func DeleteStudentById(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := studentID(w, r)
+		if !ok {
+			return
+		}
+
+		if err := store.DeleteStudentById(id); err != nil {
+			if errors.Is(err, storage.ErrStudentNotFound) {
+				writeError(w, http.StatusNotFound, err.Error())
+				return
+			}
+			slog.Error("failed to delete student", slog.Int64("id", id), slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func studentID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "student id must be a positive integer")
+		return 0, false
+	}
+	return id, true
+}
+
+func decodeInput(w http.ResponseWriter, r *http.Request, input *types.StudentInput) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(input); err != nil {
+		if errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "request body must not be empty")
+		} else {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				writeError(w, http.StatusRequestEntityTooLarge, "request body is too large")
+			} else {
+				writeError(w, http.StatusBadRequest, "invalid JSON request body")
+			}
+		}
+		return false
+	}
+
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body is too large")
+		} else {
+			writeError(w, http.StatusBadRequest, "request body must contain a single JSON object")
+		}
+		return false
+	}
+
+	input.Name = strings.TrimSpace(input.Name)
+	input.Email = strings.TrimSpace(input.Email)
+	return true
+}
+
+func validateInput(w http.ResponseWriter, input types.StudentInput) bool {
+	if err := validate.Struct(input); err != nil {
+		validationErrors, ok := err.(validator.ValidationErrors)
+		if !ok {
+			slog.Error("failed to validate student input", slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return false
+		}
+		writeJSON(w, http.StatusBadRequest, response.ValidationError(validationErrors))
+		return false
+	}
+	return true
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	if err := response.WriteJSON(w, status, body); err != nil {
+		slog.Error("failed to write HTTP response", slog.String("error", err.Error()))
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	if err := response.WriteError(w, status, message); err != nil {
+		slog.Error("failed to write HTTP error response", slog.String("error", err.Error()))
 	}
 }
